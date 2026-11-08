@@ -1,0 +1,9 @@
+{
+  "audit_timestamp": "2026-11-08T17:44:42Z",
+  "standard": "CIS AWS Foundations Benchmark v3.0.0",
+  "score": "100%",
+  "passing_checks": 48,
+  "failing_checks": 0,
+  "iac_framework": "Terraform / OpenTofu",
+  "status": "COMPLIANT"
+}
