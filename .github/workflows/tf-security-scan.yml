@@ -1,49 +1,44 @@
-name: Terraform Security & Compliance Scan
+name: Terraform checks
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '15 4 * * 1'
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
-  checkov-scan:
-    name: Checkov IaC Security Gate
+  validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Run Checkov Static Analysis
-        uses: bridgecrewio/checkov-action@master
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
         with:
-          framework: terraform
-          output_format: sarif
-          output_file_path: checkov.sarif
-          soft_fail: true
-
-      - name: Upload Checkov SARIF to GitHub Security Tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+          terraform_version: 1.9.8
+      - uses: terraform-linters/setup-tflint@v4
         with:
-          sarif_file: checkov.sarif
-          category: checkov-iac
-        continue-on-error: true
+          tflint_version: v0.55.1
+      - run: make lint test
 
-  tfsec-scan:
-    name: tfsec Security Scan
+  checkov:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          soft_fail: true
+          python-version: '3.12'
+      - run: pip install checkov==3.2.471
+      - run: checkov -d modules --framework terraform --compact
 
+  tfsec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          version: v1.28.14

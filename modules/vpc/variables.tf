@@ -13,5 +13,4 @@ variable "environment" {
 variable "kms_key_arn" {
   type        = string
   description = "KMS Customer Managed Key ARN for VPC Flow Logs CloudWatch encryption"
-  default     = null
 }

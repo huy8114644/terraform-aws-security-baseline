@@ -1,48 +1,56 @@
 SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+.DEFAULT_GOAL := help
 
-.PHONY: all fmt lint validate scan plan clean help
+TERRAFORM ?= terraform
+TFLINT ?= tflint
+CHECKOV ?= checkov
+TFSEC ?= tfsec
+ROOT_DIR ?=
+MODULES := modules/eks modules/guardduty modules/s3 modules/vpc modules/waf
 
-all: fmt validate scan
+.PHONY: help fmt lint validate test scan plan clean
 
-help:
-	@echo "Terraform AWS Security Baseline Commands:"
-	@echo "  make fmt         Check Terraform code formatting (terraform fmt -check)"
-	@echo "  make lint        Run TFLint static analysis across modules"
-	@echo "  make validate    Initialize and validate all Terraform modules"
-	@echo "  make scan        Run Checkov & tfsec CIS Benchmark security scans"
-	@echo "  make plan        Run Terraform plan simulation in production environment"
-	@echo "  make clean       Remove temporary .terraform directories and cache"
+help: ## Show local commands and prerequisites
+	@echo 'Install Terraform >=1.6 <2, TFLint, Checkov and tfsec; see README.md.'
+	@echo 'fmt       Check Terraform formatting (no writes)'
+	@echo 'lint      Run formatting checks and TFLint on every module'
+	@echo 'validate  Initialize without a backend and validate every module'
+	@echo 'test      Run formatting and provider-schema validation (no AWS calls)'
+	@echo 'scan      Run Checkov and tfsec; findings fail the target'
+	@echo 'plan      Require ROOT_DIR=/path/to/your/root with .tf configuration and AWS access'
+	@echo 'clean     Remove module provider caches; retain dependency lock files'
 
 fmt:
-	@echo "==> Checking Terraform syntax and formatting..."
-	@which terraform >/dev/null 2>&1 && terraform fmt -check -recursive || echo "[INFO] terraform CLI not installed locally; checked via CI"
+	@command -v $(firstword $(TERRAFORM)) >/dev/null || { echo 'ERROR: Terraform is required' >&2; exit 127; }
+	$(TERRAFORM) fmt -check -recursive
 
-lint:
-	@echo "==> Running TFLint rule checks..."
-	@which tflint >/dev/null 2>&1 && tflint --recursive || echo "[INFO] tflint CLI not installed locally; checked via CI"
+lint: fmt
+	@command -v $(firstword $(TFLINT)) >/dev/null || { echo 'ERROR: TFLint is required' >&2; exit 127; }
+	@for module in $(MODULES); do $(TFLINT) --chdir="$$module"; done
 
 validate:
-	@echo "==> Validating all Terraform modules..."
-	@which terraform >/dev/null 2>&1 && { \
-		for mod in modules/*; do \
-			if [ -d "$$mod" ]; then \
-				echo "Validating $$mod..."; \
-				terraform -chdir="$$mod" init -backend=false >/dev/null 2>&1 || true; \
-				terraform -chdir="$$mod" validate || exit 1; \
-			fi; \
-		done; \
-		echo "All modules valid."; \
-	} || echo "[INFO] terraform CLI not installed locally; validated via GitHub Actions CI"
+	@command -v $(firstword $(TERRAFORM)) >/dev/null || { echo 'ERROR: Terraform is required' >&2; exit 127; }
+	@for module in $(MODULES); do \
+		echo "Validating $$module"; \
+		$(TERRAFORM) -chdir="$$module" init -backend=false -input=false; \
+		$(TERRAFORM) -chdir="$$module" validate; \
+	done
+
+test: fmt validate
 
 scan:
-	@echo "==> Running Checkov CIS AWS Foundations Benchmark audit..."
-	@which checkov >/dev/null 2>&1 && checkov -d modules/ --framework terraform --compact || echo "[INFO] checkov CLI not installed locally; enforced via GitHub Actions CI"
+	@command -v $(firstword $(CHECKOV)) >/dev/null || { echo 'ERROR: Checkov is required' >&2; exit 127; }
+	@command -v $(firstword $(TFSEC)) >/dev/null || { echo 'ERROR: tfsec is required' >&2; exit 127; }
+	$(CHECKOV) -d modules --framework terraform --compact
+	$(TFSEC) modules
 
 plan:
-	@echo "==> Simulating dry-run Terraform plan..."
-	@which terraform >/dev/null 2>&1 && (cd environments/production && terraform init -backend=false && terraform plan) || echo "[INFO] Run via LocalStack or with configured AWS credentials"
+	@test -n "$(ROOT_DIR)" || { echo 'ERROR: set ROOT_DIR to a configured deployment root; none is included' >&2; exit 2; }
+	@test -d "$(ROOT_DIR)" && compgen -G "$(ROOT_DIR)/*.tf" >/dev/null || { echo 'ERROR: ROOT_DIR must contain Terraform configuration' >&2; exit 2; }
+	@command -v $(firstword $(TERRAFORM)) >/dev/null || { echo 'ERROR: Terraform is required' >&2; exit 127; }
+	$(TERRAFORM) -chdir="$(ROOT_DIR)" init -input=false
+	$(TERRAFORM) -chdir="$(ROOT_DIR)" plan -input=false
 
 clean:
-	@echo "==> Cleaning local Terraform state and caches..."
-	find . -type d -name ".terraform" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name ".terraform.lock.hcl" -delete 2>/dev/null || true
+	@for module in $(MODULES); do rm -rf "$$module/.terraform"; done

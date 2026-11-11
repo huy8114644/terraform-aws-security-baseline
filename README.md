@@ -1,145 +1,94 @@
-# Terraform AWS Security Baseline (CIS Benchmark 3.0)
+# Terraform AWS Security Baseline
 
-[![Terraform Security Scan](https://github.com/huy8114644/terraform-aws-security-baseline/actions/workflows/tf-security-scan.yml/badge.svg)](https://github.com/huy8114644/terraform-aws-security-baseline/actions/workflows/tf-security-scan.yml)
-[![CIS AWS Benchmark v3.0](https://img.shields.io/badge/CIS%20Benchmark-v3.0.0%20Compliant-success.svg)](https://www.cisecurity.org/benchmark/amazon_web_services)
-[![Checkov: Verified](https://img.shields.io/badge/Checkov-Passed-blue.svg)](https://checkov.io)
-[![OpenTofu: Compatible](https://img.shields.io/badge/OpenTofu-Compatible-FFDA1A.svg?logo=opentofu)](https://opentofu.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+Reusable AWS infrastructure examples for reviewing security controls in Terraform. The five modules define a VPC with flow logging, a private EKS control plane, an encrypted S3 bucket, a regional WAF ACL, and a GuardDuty detector. This portfolio demonstrates IaC design and review; it does not establish a deployed environment or CIS certification.
 
-Production-grade **Terraform / OpenTofu Enterprise Modules** engineered to strictly satisfy the **CIS AWS Foundations Benchmark v3.0.0**, validated automatically via Checkov, tfsec, and tflint in CI/CD.
-
----
-
-## 🎯 Problem Statement & Core Value
-
-Over 80% of cloud security breaches originate from Infrastructure as Code (IaC) misconfigurations — such as unencrypted storage buckets, public Kubernetes API endpoints, missing audit flow logs, or exposed administrative ports.
-
-This repository provides reusable, hardened Terraform modules establishing an enterprise security foundation with zero configuration drift:
-1. **Zero Public Ingress by Default:** VPC Flow Logs, private endpoints for EKS, and isolated database subnets.
-2. **KMS Envelope Encryption:** Customer Managed Keys (CMK) enforcing AES-256 GCM encryption for S3 objects, EKS secrets, and CloudWatch logs.
-3. **Automated Perimeter Defense:** Managed AWS WAFv2 Web ACL preventing SQL injection, cross-site scripting, and volumetric HTTP abuse.
-4. **Threat Intelligence:** AWS GuardDuty multi-account detector with automated EKS audit log analysis.
-
----
-
-## 🏛️ Architecture Overview
+## Architecture and scope
 
 ```mermaid
-flowchart TD
-    subgraph Perimeter ["1. Perimeter & Edge Security"]
-        Internet[Public Internet / Clients] --> WAF[AWS WAFv2 Web ACL<br/>AWSManagedRulesCommonRuleSet<br/>SQLi & KnownBadInputs<br/>IP Rate Limiting]
-        WAF --> ALB[Internal / External ALB]
-    end
-
-    subgraph VPC ["2. CIS 3.0 Hardened VPC"]
-        ALB --> PrivateSubnets[Private Application Subnets<br/>No Direct Public Ingress]
-        PrivateSubnets --> DBSubnets[Isolated Database Tier<br/>No Internet Gateway Route]
-        VPCFlow[VPC Flow Logs] --> CWLogs[CloudWatch Log Group<br/>Encrypted with KMS CMK<br/>90-day Retention]
-    end
-
-    subgraph Compute ["3. Hardened Private EKS Cluster"]
-        PrivateSubnets --> EKS[EKS Control Plane v1.29<br/>Private API Endpoint Only<br/>Audit & Authenticator Logging]
-        EKS --> KMS_EKS[KMS CMK<br/>Envelope Encryption for K8s Secrets]
-    end
-
-    subgraph Storage ["4. Secure Storage & Audit Vault"]
-        PrivateSubnets --> S3[S3 Audit & Telemetry Bucket<br/>Block 4/4 Public Access<br/>SSE-KMS Customer Managed Key<br/>Object Versioning Enabled]
-    end
-
-    subgraph SIEM ["5. Continuous Threat Detection"]
-        EKS & S3 & VPCFlow --> GD[AWS GuardDuty Detector<br/>EKS Audit Log Monitoring<br/>Malware Protection & S3 Protection]
-    end
-
-    classDef dark fill:#0d1117,stroke:#238636,stroke-width:1.5px,color:#c9d1d9;
-    class Perimeter,VPC,Compute,Storage,SIEM dark;
+flowchart LR
+  Root[Consumer Terraform root] --> VPC[VPC module]
+  Root --> EKS[EKS control plane module]
+  Root --> S3[S3 audit bucket module]
+  Root --> WAF[Regional WAF ACL module]
+  Root --> GD[GuardDuty detector module]
+  VPC --> Flow[All-traffic VPC flow log]
+  Flow --> Logs[CloudWatch log group: 90 days]
+  Role[Flow log IAM role] --> Flow
+  Existing[Existing IAM role, private subnets and KMS key] --> EKS
+  Key[Existing KMS key] --> Logs
+  Key --> S3
+  WAF -. consumer must associate .-> ALB[External ALB or supported regional resource]
+  GitOps[External GitOps platform] -. optional integration, absent here .-> EKS
 ```
 
----
+These are independent modules, with no deployment root or wiring between them. The VPC module creates no subnets, routes, internet gateways or VPC endpoints. Its flow log IAM role still needs delivery permissions before operational use. EKS creates no nodes, IAM role, network or KMS key; its Kubernetes version is fixed at `1.29`, which must be reviewed against current regional support before deployment. S3 enables versioning, SSE-KMS and all four public access blocks; access logging and an HTTPS-only bucket policy are absent. WAF includes an IP rate limit of 1,000 and `AWSManagedRulesCommonRuleSet`, with no resource association or logging destination. GuardDuty enables S3, Kubernetes audit and EBS malware data sources for one account and region; organization enrollment and response automation are absent. Tags mentioning compliance express intent and are not evidence.
 
-## 🔒 Hardened Infrastructure Modules
+## CI and delivery
 
-### 1. Hardened VPC Module (`modules/vpc/`)
-- **VPC Flow Logs:** Enabled for all traffic, streaming directly to encrypted CloudWatch Log Groups.
-- **Subnet Tiering:** Isolated database tiers with zero Internet Gateway egress.
-- **VPC Endpoints:** S3 and DynamoDB gateway endpoints enabled to prevent traffic from leaving the AWS private backbone.
+```mermaid
+flowchart LR
+  Change[Pull request or push to main] --> CI[Terraform checks workflow]
+  Manual[Manual or weekly trigger] --> CI
+  CI --> Lint[Terraform fmt and TFLint]
+  CI --> Validate[Initialize modules and terraform validate]
+  CI --> Sec[tfsec and Checkov]
+  Lint --> Review[Logs and human review]
+  Validate --> Review
+  Sec --> Review
+  Review -. external deployment process .-> Root[Consumer root and AWS account]
+  Root -. optional external GitOps .-> Platform[Application delivery]
+```
 
-### 2. Hardened EKS Cluster (`modules/eks/`)
-- **Private API Endpoint:** `endpoint_public_access = false` with private Bastion / VPN access only.
-- **KMS Envelope Encryption:** All Kubernetes secrets are encrypted at rest using dedicated Customer Managed Keys (CMK).
-- **Cluster Logging:** API server, audit logs, and authenticator logs streamed to CloudWatch with retention policies.
+The workflow runs static validation and security scans without AWS credentials. Findings fail the job; unresolved findings are expected to remain visible until fixed. There is no apply, deployment, live drift detection, or demonstrated GitOps integration. The historical files in [`reports/`](reports/README.md) contain constant scores from a retired generator, not audit results. The workflow no longer generates or commits those claims. A green static scan would not certify CIS conformance.
 
-### 3. Secure S3 Bucket Baseline (`modules/s3/`)
-- **Block Public Access:** All 4 public access block settings enforced globally.
-- **Encryption:** Server-Side Encryption with Customer Managed KMS Keys (SSE-KMS).
-- **Audit & Versioning:** Object versioning enabled with S3 Server Access Logging.
+## Inputs
 
-### 4. Modular AWS WAFv2 Web ACL (`modules/waf/`)
-- **AWS Managed Rule Sets:** AWSManagedRulesCommonRuleSet and AWSManagedRulesKnownBadInputsRuleSet.
-- **Layer 7 Rate Limiter:** Per-IP request threshold blocking brute-force and scraping attacks.
+Types and defaults below match the module declarations. Required values have no placeholder defaults.
 
-### 5. Multi-Account GuardDuty (`modules/guardduty/`)
-- Real-time continuous analysis of CloudTrail management events, VPC Flow Logs, and EKS audit logs.
+| Module | Variable | Type | Default | Purpose |
+|---|---|---|---|---|
+| vpc | `cidr_block` | `string` | `"10.0.0.0/16"` | VPC CIDR |
+| vpc | `environment` | `string` | `"prod"` | Names and tags |
+| vpc | `kms_key_arn` | `string` | Required | Existing KMS key authorized for CloudWatch Logs |
+| eks | `environment` | `string` | `"prod"` | Cluster name and tags |
+| eks | `cluster_role_arn` | `string` | Required | Existing EKS control plane IAM role |
+| eks | `private_subnet_ids` | `list(string)` | Required | Existing private subnets across at least two availability zones |
+| eks | `kms_key_arn` | `string` | Required | Existing key for Kubernetes secrets |
+| s3 | `environment` | `string` | `"prod"` | Bucket prefix and tags |
+| s3 | `account_id` | `string` | Required | Account ID used in bucket name |
+| s3 | `kms_key_arn` | `string` | Required | Existing key for SSE-KMS |
+| guardduty | `environment` | `string` | `"production"` | Detector tags |
+| waf | `environment` | `string` | `"production"` | ACL name, metrics and tags |
 
----
+Each module requires Terraform `>=1.6, <2` and AWS provider `~>5.100.0`. The compatibility range is not a claim of OpenTofu testing. Modules currently expose no outputs. Consumer roots must configure the AWS provider, account, region, input values, backend and credentials. Key policies and IAM permissions must match the services using them.
 
-## ⚙️ Module Variables & Configuration
+## Local quickstart
 
-### Hardened VPC (`modules/vpc/`)
-| Variable | Type | Default | Description |
-|---|---|---|---|
-| `cidr_block` | String | `"10.0.0.0/16"` | Supernet CIDR block for the VPC |
-| `environment` | String | `"prod"` | Target environment tag |
-| `kms_key_arn` | String | `null` | KMS Key ARN for Flow Logs CloudWatch encryption |
-
-### Hardened EKS Cluster (`modules/eks/`)
-| Variable | Type | Default | Description |
-|---|---|---|---|
-| `environment` | String | `"prod"` | Deployment environment name |
-| `cluster_role_arn` | String | Required | IAM Role ARN for EKS Control Plane |
-| `private_subnet_ids` | List(String) | Required | Private subnet IDs for worker node placement |
-| `kms_key_arn` | String | Required | Customer Managed KMS Key for envelope encryption |
-
-### Secure S3 Bucket (`modules/s3/`)
-| Variable | Type | Default | Description |
-|---|---|---|---|
-| `environment` | String | `"prod"` | Target deployment environment |
-| `account_id` | String | Required | AWS Account ID for globally unique bucket naming |
-| `kms_key_arn` | String | Required | Customer Managed KMS Key for SSE-KMS |
-
----
-
-## 🚀 Local Developer Quickstart
-
-Standardized operational tasks are automated via the included `Makefile`:
+Install Git, GNU Make, Terraform 1.9.8, TFLint 0.55.1, Checkov 3.2.471 and tfsec 1.28.14. Python 3.12 with `pip install checkov==3.2.471` installs Checkov. Use the official Terraform, TFLint and tfsec release installers for your OS. Provider initialization requires registry network access; no AWS credentials are needed for the following checks:
 
 ```bash
-# 1. View all available Makefile commands
+git clone https://github.com/huy8114644/terraform-aws-security-baseline.git
+cd terraform-aws-security-baseline
 make help
-
-# 2. Check code formatting against canonical style
-make fmt
-
-# 3. Validate syntax across all Terraform modules
-make validate
-
-# 4. Run Checkov CIS AWS Foundations Benchmark compliance scan
+make lint
+make test
 make scan
-
-# 5. Clean local caches
-make clean
 ```
 
-### Local Verification with LocalStack
+`make test` runs formatting and provider-schema validation for every module. It does not provision resources or assert runtime behavior. Missing tools, initialization errors, validation failures and scanner findings return nonzero exit codes. No security checks are silently skipped.
+
+For Terraform-only verification with Docker instead of a host installation:
+
 ```bash
-# Start LocalStack community container
-docker run --rm -d -p 4566:4566 -e SERVICES=s3,ec2,kms,cloudwatch localstack/localstack
-
-# Validate provisioning against LocalStack endpoint
-tflocal init
-tflocal plan
+docker run --rm -v "$PWD:/work" -w /work hashicorp/terraform:1.9.8 fmt -check -recursive
+for module in modules/*; do
+  docker run --rm -v "$PWD:/work" -w /work hashicorp/terraform:1.9.8 -chdir="$module" init -backend=false -input=false || exit 1
+  docker run --rm -v "$PWD:/work" -w /work hashicorp/terraform:1.9.8 -chdir="$module" validate || exit 1
+done
 ```
 
----
+A plan requires a consumer root with module blocks, real inputs, provider configuration, credentials and access to its state backend. This repository's `environments/production` has no configuration and is not a runnable example. After creating and reviewing your root, run `make plan ROOT_DIR=/absolute/path/to/root`. Terraform may query AWS during planning; no apply target is provided. LocalStack provisioning is not implemented or verified here. Keep state, saved plans, credentials and `.tfvars` files out of commits. `make clean` removes provider caches while retaining dependency lock files.
 
-## 📄 License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch conventions, local checks and review evidence. This project is licensed under [MIT](LICENSE).
