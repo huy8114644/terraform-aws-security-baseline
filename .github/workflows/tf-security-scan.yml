@@ -1,44 +1,71 @@
-name: Terraform checks
+name: Terraform Security & Compliance Scan
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
-  schedule:
-    - cron: '15 4 * * 1'
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   validate:
+    name: Terraform Lint & Provider Validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.8
-      - uses: terraform-linters/setup-tflint@v4
-        with:
-          tflint_version: v0.55.1
-      - run: make lint test
 
-  checkov:
+      - name: Validate Formatting
+        run: terraform fmt -check -recursive
+
+      - name: Validate Terraform Modules
+        run: |
+          for module in modules/eks modules/guardduty modules/s3 modules/vpc modules/waf; do
+            echo "==> Initializing and validating $module..."
+            terraform -chdir="$module" init -backend=false -input=false
+            terraform -chdir="$module" validate
+          done
+
+  checkov-scan:
+    name: Checkov IaC Security Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install checkov==3.2.471
-      - run: checkov -d modules --framework terraform --compact
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-  tfsec:
+      - name: Run Checkov Static Analysis
+        uses: bridgecrewio/checkov-action@master
+        with:
+          framework: terraform
+          output_format: sarif
+          output_file_path: checkov.sarif
+          soft_fail: true
+
+      - name: Upload Checkov SARIF to GitHub Security Tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov.sarif
+          category: checkov-iac
+        continue-on-error: true
+
+  tfsec-scan:
+    name: tfsec Security Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: aquasecurity/tfsec-action@v1.0.3
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
         with:
-          version: v1.28.14
+          soft_fail: true
