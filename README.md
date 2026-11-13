@@ -28,10 +28,10 @@ These are independent modules, with no deployment root or wiring between them. T
 ```mermaid
 flowchart LR
   Change[Pull request or push to main] --> CI[Terraform checks workflow]
-  Manual[Manual or weekly trigger] --> CI
-  CI --> Lint[Terraform fmt and TFLint]
+  Manual[Manual trigger] --> CI
+  CI --> Lint[Terraform fmt]
   CI --> Validate[Initialize modules and terraform validate]
-  CI --> Sec[tfsec and Checkov]
+  CI --> Sec[Advisory tfsec and Checkov]
   Lint --> Review[Logs and human review]
   Validate --> Review
   Sec --> Review
@@ -39,7 +39,7 @@ flowchart LR
   Root -. optional external GitOps .-> Platform[Application delivery]
 ```
 
-The workflow runs static validation and security scans without AWS credentials. Findings fail the job; unresolved findings are expected to remain visible until fixed. There is no apply, deployment, live drift detection, or demonstrated GitOps integration. The historical files in [`reports/`](reports/README.md) contain constant scores from a retired generator, not audit results. The workflow no longer generates or commits those claims. A green static scan would not certify CIS conformance.
+The workflow runs formatting, module validation and security scans without AWS credentials. Checkov and tfsec currently use `soft_fail: true`, so security findings do not fail those jobs; Checkov SARIF upload also permits failure. TFLint runs through local `make lint` but is absent from the current workflow, which has no scheduled trigger. Local `make scan` fails on findings and differs from CI. There is no apply, deployment, live drift detection, or demonstrated GitOps integration. The historical files in [`reports/`](reports/README.md) contain constant scores from a retired generator, not audit results. The workflow no longer generates or commits those claims. A green workflow does not certify CIS conformance or clean security scans.
 
 ## Inputs
 
